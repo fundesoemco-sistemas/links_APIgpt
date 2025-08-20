@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Links Admin</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="wrap">
+    <div class="topbar">
+      <div class="brand">
+        <svg width="26" height="26" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M5 12a 7 7 0 1114 0 7 7 0 01-14 0z" stroke="#7aa2ff" stroke-width="2"/>
+          <path d="M9 12l2 2 4-4" stroke="#4dd5a7" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        <h1>Links Admin</h1>
+      </div>
+      <div class="muted">UI ligera para tu API de enlaces</div>
+    </div>
+
+    <div class="card">
+      <div class="toolbar">
+        <div class="group row">
+          <input id="search" class="grow" placeholder="Buscar texto (URL, título o notas)" />
+          <input id="tag" class="grow" placeholder="Filtrar por etiqueta (tag)" />
+          <button class="btn-accent" id="btnSearch">Buscar</button>
+        </div>
+        <div class="group row right">
+          <button class="btn-secondary" id="exportJsonBtn">Export JSON</button>
+          <button class="btn-secondary" id="exportCsvBtn">Export CSV</button>
+          <button class="btn-ghost" id="importCsvBtn">Importar CSV</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:14px">
+      <div class="section-title">Nuevo enlace</div>
+      <div class="grid grid-2">
+        <div class="row">
+          <input id="url" class="grow" placeholder="https://..." />
+          <input id="title" class="grow" placeholder="Título" />
+        </div>
+        <div class="row">
+          <input id="tags" class="grow" placeholder="tags (coma-separado)" />
+          <textarea id="notes" class="grow" rows="2" placeholder="Notas"></textarea>
+        </div>
+        <div class="row" style="padding:0 14px 14px">
+          <button class="btn-green" id="btnCreate">Guardar</button>
+          <span id="msg" class="muted"></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:14px">
+      <div class="section-title">
+        Resultados <span class="counter" id="counter"></span>
+      </div>
+      <div style="padding:0 14px 14px">
+        <div id="empty" class="empty" style="display:none">No hay enlaces que coincidan con la búsqueda.</div>
+        <div style="overflow:auto">
+          <table>
+            <thead>
+              <tr>
+                <th style="width:22%">Título</th>
+                <th style="width:30%">URL</th>
+                <th style="width:18%">Tags</th>
+                <th>Notas</th>
+                <th style="width:160px">Acciones</th>
+              </tr>
+            </thead>
+            <tbody id="tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="footer">© FUNDESOEMCO · Admin de enlaces minimal · FastAPI</div>
+  </div>
+
+  <div class="overlay" id="overlay">
+    <div class="modal">
+      <h3>Importar enlaces desde CSV</h3>
+      <div class="note">Formato: <code>url,title,tags,notes</code>. Las etiquetas se separan por comas.</div>
+      <div class="row" style="margin-top:10px">
+        <input type="file" id="csvFile" accept=".csv,text/csv" />
+      </div>
+      <div class="actions" style="margin-top:10px">
+        <button class="btn-accent" id="confirmImport">Importar</button>
+        <button class="btn-ghost" id="cancelImport">Cancelar</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="overlay" id="loading" style="background:rgba(8,12,25,.45);display:none">
+    <div class="modal" style="max-width:240px;text-align:center">Procesando...</div>
+  </div>
+  <div class="toast" id="toast"></div>
+
+  <script>
+const base = window.location.origin;
+const $ = (id)=>document.getElementById(id);
+
+function toast(msg, ms=2200){ const t=$('toast'); t.textContent=msg; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'), ms); }
+function showLoading(v){ $('loading').style.display = v ? 'flex' : 'none'; }
+function escapeHtml(str){ return (str||"").replace(/[&<>"']/g, m=>({"&":"&amp;","<":"&lt;","&gt;":"&gt;","\"":"&quot;","'":"&#39;"}[m])); }
+
+function val(id){ return $(id).value.trim(); }
+function setVal(id,v){ $(id).value = v ?? ""; }
+
+$('btnSearch').addEventListener('click', loadLinks);
+$('btnCreate').addEventListener('click', createLink);
+$('exportJsonBtn').addEventListener('click', ()=>downloadFile('/export.json','links.json'));
+$('exportCsvBtn').addEventListener('click', ()=>downloadFile('/export.csv','links.csv'));
+$('importCsvBtn').addEventListener('click', ()=>{ $('overlay').classList.add('show'); });
+$('cancelImport').addEventListener('click', ()=>{ $('overlay').classList.remove('show'); $('csvFile').value=""; });
+$('confirmImport').addEventListener('click', importCsv);
+
+async function loadLinks(){
+  showLoading(true);
+  try{
+    const p = new URLSearchParams({ limit: "200" });
+    const q = val('search'); const tg = val('tag');
+    if(q) p.set('q', q);
+    if(tg) p.set('tag', tg);
+
+    const res = await fetch(`${base}/links?`+p.toString());
+    if(!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    const links = data.links || [];
+    $('counter').textContent = `(${links.length} de ${data.total ?? links.length})`;
+    const tb = $('tbody'); tb.innerHTML="";
+    $('empty').style.display = links.length ? 'none' : 'block';
+
+    links.forEach(item=>{
+      const tr = document.createElement('tr');
+      tr.dataset.id = item.id;
+
+      const tdTitle = document.createElement('td');
+      const tdUrl = document.createElement('td');
+      const tdTags = document.createElement('td');
+      const tdNotes = document.createElement('td');
+      const tdActions = document.createElement('td');
+
+      tdTitle.innerHTML = `<div class="nowrap" title="${escapeHtml(item.title||"")}">${escapeHtml(item.title||"")}</div>`;
+      tdUrl.innerHTML   = `<a class="nowrap" href="${escapeHtml(item.url)}" target="_blank" title="${escapeHtml(item.url)}">${escapeHtml(item.url)}</a>`;
+      tdTags.className="tags";
+      tdTags.innerHTML = (item.tags||[]).map(t=>`<span>${escapeHtml(t)}</span>`).join('');
+      tdNotes.innerHTML = `<div class="nowrap" title="${escapeHtml(item.notes||"")}">${escapeHtml(item.notes||"")}</div>`;
+
+      tdActions.innerHTML = `
+        <div class="actions">
+          <button class="btn-secondary" data-act="edit">Editar</button>
+          <button class="btn-danger" data-act="del">Borrar</button>
+        </div>`;
+
+      tr.append(tdTitle, tdUrl, tdTags, tdNotes, tdActions);
+      tb.appendChild(tr);
+    });
+
+  }catch(e){
+    toast("Error al cargar: " + e.message);
+  }finally{
+    showLoading(false);
+  }
+}
+
+function toInputs(tr, item){
+  tr.innerHTML = `
+    <td><input data-f="title" value="${escapeHtml(item.title||"")}"/></td>
+    <td><input data-f="url" value="${escapeHtml(item.url||"")}"/></td>
+    <td><input data-f="tags" value="${escapeHtml((item.tags||[]).join(','))}"/></td>
+    <td><input data-f="notes" value="${escapeHtml(item.notes||"")}"/></td>
+    <td class="actions">
+      <button class="btn-green" data-act="save">Guardar</button>
+      <button class="btn-ghost" data-act="cancel">Cancelar</button>
+    </td>`;
+}
+
+function readInputs(tr){
+  const q = (sel)=>tr.querySelector(sel);
+  return {
+    title: q('input[data-f="title"]').value.trim() || null,
+    url: q('input[data-f="url"]').value.trim(),
+    tags: (q('input[data-f="tags"]').value.trim()||"").split(',').map(s=>s.trim()).filter(Boolean),
+    notes: q('input[data-f="notes"]').value.trim() || null
+  };
+}
+
+$('tbody').addEventListener('click', async (ev)=>{
+  const btn = ev.target.closest('button'); if(!btn) return;
+  const act = btn.dataset.act;
+  const tr = ev.target.closest('tr'); if(!tr) return;
+  const id = tr.dataset.id;
+
+  if(act==='del'){
+    if(!confirm('¿Borrar este enlace?')) return;
+    showLoading(true);
+    try{
+      const res = await fetch(`${base}/links/${id}`, { method:'DELETE' });
+      if(!res.ok) throw new Error(await res.text());
+      toast('Enlace borrado');
+      await loadLinks();
+    }catch(e){ toast('Error: '+e.message); }
+    finally{ showLoading(false); }
+  }
+
+  if(act==='edit'){
+    showLoading(true);
+    try{
+      const res = await fetch(`${base}/links/${id}`);
+      if(!res.ok) throw new Error(await res.text());
+      const item = await res.json();
+      toInputs(tr, item);
+    }catch(e){ toast('Error: '+e.message); }
+    finally{ showLoading(false); }
+  }
+
+  if(act==='save'){
+    const payload = readInputs(tr);
+    showLoading(true);
+    try{
+      const res = await fetch(`${base}/links/${id}`, { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+      if(!res.ok) throw new Error(await res.text());
+      toast('Cambios guardados');
+      await loadLinks();
+    }catch(e){ toast('Error: '+e.message); }
+    finally{ showLoading(false); }
+  }
+
+  if(act==='cancel'){
+    loadLinks();
+  }
+});
+
+async function createLink(){
+  const payload = {
+    url: val('url'),
+    title: val('title') || null,
+    tags: (val('tags')||"").split(',').map(s=>s.trim()).filter(Boolean),
+    notes: val('notes') || null
+  };
+  if(!payload.url){ toast('La URL es obligatoria'); return; }
+  showLoading(true);
+  try{
+    const res = await fetch(`${base}/links`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+    if(!res.ok) throw new Error(await res.text());
+    setVal('url',""); setVal('title',""); setVal('tags',""); setVal('notes',"");
+    document.getElementById('msg').textContent = "✔ Enlace guardado";
+    loadLinks();
+  }catch(e){ document.getElementById('msg').textContent = "✖ " + (e.message||'Error'); }
+  finally{ showLoading(false); setTimeout(()=>document.getElementById('msg').textContent="", 2500); }
+}
+
+async function downloadFile(path, filename){
+  showLoading(true);
+  try{
+    const res = await fetch(`${base}${path}`);
+    if(!res.ok) throw new Error(await res.text());
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href=url; a.download=filename; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+    toast('Descarga lista: ' + filename);
+  }catch(e){ toast('Error exportando: ' + e.message); }
+  finally{ showLoading(false); }
+}
+
+async function importCsv(){
+  const file = document.getElementById('csvFile').files[0];
+  if(!file){ toast('Selecciona un CSV'); return; }
+  showLoading(true);
+  try{
+    const text = await file.text();
+    const rows = parseCsv(text);
+    if(!rows.length){ throw new Error('CSV vacío'); }
+    const payload = rows.map(r=>({
+      url: r.url?.trim() || "",
+      title: (r.title||"").trim() || null,
+      tags: (r.tags||"").split(',').map(s=>s.trim()).filter(Boolean),
+      notes: (r.notes||"").trim() || null
+    })).filter(x=>x.url);
+    const res = await fetch(`${base}/links/bulk`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+    if(!res.ok) throw new Error(await res.text());
+    toast('Importación completa');
+    document.getElementById('overlay').classList.remove('show'); document.getElementById('csvFile').value="";
+    loadLinks();
+  }catch(e){ toast('Error importando: ' + e.message); }
+  finally{ showLoading(false); }
+}
+
+function parseCsv(text){
+  const lines = text.split(/\r?\n/).filter(l=>l.trim().length>0);
+  if(!lines.length) return [];
+  const headers = splitCsvLine(lines[0]).map(h=>h.trim().toLowerCase());
+  const out = [];
+  for(let i=1;i<lines.length;i++){
+    const cols = splitCsvLine(lines[i]);
+    const obj = {};
+    headers.forEach((h,idx)=> obj[h] = cols[idx] ?? "");
+    out.push(obj);
+  }
+  return out;
+}
+function splitCsvLine(line){
+  const res=[]; let cur=""; let inQ=false;
+  for(let i=0;i<line.length;i++){
+    const ch=line[i];
+    if(ch==='"'){ if(inQ && line[i+1]==='"'){ cur+='"'; i++; } else { inQ=!inQ; } }
+    else if(ch===',' && !inQ){ res.push(cur); cur=""; }
+    else { cur+=ch; }
+  }
+  res.push(cur);
+  return res;
+}
+
+window.addEventListener('DOMContentLoaded', loadLinks);
+  </script>
+</body>
+</html>
