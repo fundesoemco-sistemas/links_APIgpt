@@ -9,15 +9,24 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 def now_utc():
     return datetime.now(timezone.utc)
 
+def _connect(**kw):
+    if not DATABASE_URL:
+        raise RuntimeError("DATABASE_URL no configurada")
+    return psycopg.connect(
+        DATABASE_URL,
+        row_factory=dict_row,
+        autocommit=True,
+        connect_timeout=10,
+        **kw
+    )
+
 class PgStorage:
     def __init__(self):
         if not DATABASE_URL:
             raise RuntimeError("DATABASE_URL no configurada")
-        # autocommit=True para simplificar DDL/DML
-        self.conn = psycopg.connect(DATABASE_URL, autocommit=True)
 
-        # Crear extensión y tabla si no existen
-        with self.conn.cursor() as cur:
+        # Crear extensión y tabla si no existen (conexión efímera)
+        with _connect() as conn, conn.cursor() as cur:
             cur.execute("create extension if not exists pgcrypto;")
             cur.execute(
                 """
@@ -55,7 +64,7 @@ class PgStorage:
 
         wh = (" where " + " and ".join(where)) if where else ""
 
-        with self.conn.cursor(row_factory=dict_row) as cur:
+        with _connect() as conn, conn.cursor() as cur:
             cur.execute(f"select count(*) as c from links{wh}", params)
             total = cur.fetchone()["c"]
 
@@ -76,7 +85,7 @@ class PgStorage:
         now = now_utc()
         tags = item.get("tags") or []
         url = str(item["url"])  # asegurar string
-        with self.conn.cursor(row_factory=dict_row) as cur:
+        with _connect() as conn, conn.cursor() as cur:
             cur.execute(
                 """
                 insert into links(url, title, tags, notes, created_at, updated_at)
@@ -90,22 +99,28 @@ class PgStorage:
     def create_links_bulk(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         now = now_utc()
         out: List[Dict[str, Any]] = []
-        with self.conn.cursor(row_factory=dict_row) as cur:
-            for it in items:
-                url = str(it["url"])  # asegurar string
-                cur.execute(
-                    """
-                    insert into links(url, title, tags, notes, created_at, updated_at)
-                    values (%s, %s, %s, %s, %s, %s)
-                    returning id::text as id, url, title, tags, notes, created_at, updated_at
-                    """,
-                    [url, it.get("title"), it.get("tags") or [], it.get("notes"), now, now],
-                )
-                out.append(cur.fetchone())
+        # transacción explícita para bulk
+        with _connect(autocommit=False) as conn, conn.cursor() as cur:
+            try:
+                for it in items:
+                    url = str(it["url"])
+                    cur.execute(
+                        """
+                        insert into links(url, title, tags, notes, created_at, updated_at)
+                        values (%s, %s, %s, %s, %s, %s)
+                        returning id::text as id, url, title, tags, notes, created_at, updated_at
+                        """,
+                        [url, it.get("title"), it.get("tags") or [], it.get("notes"), now, now],
+                    )
+                    out.append(cur.fetchone())
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
         return out
 
     def get_link(self, link_id: str) -> Optional[Dict[str, Any]]:
-        with self.conn.cursor(row_factory=dict_row) as cur:
+        with _connect() as conn, conn.cursor() as cur:
             cur.execute(
                 "select id::text as id, url, title, tags, notes, created_at, updated_at from links where id = %s",
                 [link_id],
@@ -125,12 +140,11 @@ class PgStorage:
         if not fields:
             return self.get_link(link_id)
 
-        # añadir updated_at y el id al final
         fields_sql = ", ".join(fields + ["updated_at=%s"])
         params.append(now_utc())
         params.append(link_id)
 
-        with self.conn.cursor(row_factory=dict_row) as cur:
+        with _connect() as conn, conn.cursor() as cur:
             cur.execute(
                 f"""
                 update links
@@ -143,12 +157,12 @@ class PgStorage:
             return cur.fetchone()
 
     def delete_link(self, link_id: str) -> bool:
-        with self.conn.cursor() as cur:
+        with _connect() as conn, conn.cursor() as cur:
             cur.execute("delete from links where id=%s", [link_id])
             return cur.rowcount > 0
 
     def export_all(self) -> List[Dict[str, Any]]:
-        with self.conn.cursor(row_factory=dict_row) as cur:
+        with _connect() as conn, conn.cursor() as cur:
             cur.execute(
                 "select id::text as id, url, title, tags, notes, created_at, updated_at from links order by updated_at desc"
             )
