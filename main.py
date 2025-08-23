@@ -1,6 +1,7 @@
 from dotenv import load_dotenv
 load_dotenv()
 
+import httpx
 import os, io, csv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -110,6 +111,38 @@ def export_all_csv():
             i.get("updated_at", "")
         ])
     return output.getvalue()
+
+@app.get("/search_google")
+def search_google(q: str, num: int = 5):
+    """
+    Busca en Google Programmable Search (Custom Search JSON API)
+    usando GOOGLE_API_KEY y GOOGLE_CX del .env.
+    """
+    api_key = os.getenv("GOOGLE_API_KEY")
+    cx = os.getenv("GOOGLE_CX")
+
+    if not api_key or not cx:
+        raise HTTPException(status_code=500, detail="Google API Key o CX no configurados")
+
+    url = "https://www.googleapis.com/customsearch/v1"
+    params = {"q": q, "key": api_key, "cx": cx, "num": num, "hl": "es", "safe": "active"}
+
+    try:
+        r = httpx.get(url, params=params, timeout=20)
+        r.raise_for_status()
+        data = r.json()
+        results = [
+            {
+                "title": it.get("title"),
+                "link": it.get("link"),
+                "snippet": it.get("snippet"),
+                "displayLink": it.get("displayLink"),
+            }
+            for it in data.get("items", [])[:num]
+        ]
+        return {"query": q, "results": results}
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"Error consultando Google: {e}")
 
 # Montar UI estática
 app.mount("/", StaticFiles(directory="static", html=True), name="static")
