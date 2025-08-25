@@ -3,7 +3,7 @@ load_dotenv()
 
 import httpx
 import os, io, csv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 from typing import Optional, List
@@ -113,16 +113,23 @@ def export_all_csv():
     return output.getvalue()
 
 @app.get("/search_google")
-def search_google(q: str, num: int = 5):
-    """
-    Busca en Google Programmable Search (Custom Search JSON API)
-    usando GOOGLE_API_KEY y GOOGLE_CX del .env.
-    """
+def search_google(
+    q: str,
+    num: int = 5,
+    engine: str = Query("legal", pattern="^(legal|comp)$")
+):
     api_key = os.getenv("GOOGLE_API_KEY")
-    cx = os.getenv("GOOGLE_CX")
+    cx_map = {
+        "legal": os.getenv("GOOGLE_CX_LEGAL") or os.getenv("GOOGLE_CX"),
+        "comp":  os.getenv("GOOGLE_CX_COMP"),
+    }
+    cx = cx_map.get(engine)
 
     if not api_key or not cx:
-        raise HTTPException(status_code=500, detail="Google API Key o CX no configurados")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Google API Key o CX no configurados (engine='{engine}')"
+        )
 
     url = "https://www.googleapis.com/customsearch/v1"
     params = {"q": q, "key": api_key, "cx": cx, "num": num, "hl": "es", "safe": "active"}
